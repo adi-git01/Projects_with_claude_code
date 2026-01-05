@@ -1,0 +1,8 @@
+ticker,strategy,trend_score,quality_score,value_score,forensic_verdict,action,entry_zone,stop_loss,target,notes
+SARDA,Deep Value,64,10,8.7,Cleanest Setup. High growth + low valuation + fresh trend.,AGGRESSIVE BUY,525,475,650,Waking Up trend
+MAHABANK,Momentum,100,10,6.9,Safe Momentum. Rare Perfect Quality for a PSU Bank.,BUY NOW,CMP,54,80,Strong momentum
+NMDC,Safety/Div,100,10,8.8,High Safety. Cash-rich high dividend yield protects downside.,ACCUMULATE,80-84,72,105,High dividend yield
+NATIONALUM,Momentum,100,10,7.2,Overheated. Trading 58% above 200-DMA. Risk of pullback.,WAIT FOR DIP,290-300,275,400,Risk of pullback
+CENTRALBK,Turnaround,73,,8.4,Speculative. Bet on privatization news not fundamentals.,BUY SMALL,35-38,31,55,Speculative play
+HEG,Cyclical,100,4.9,7.9,High Risk. Junk Rally characteristics. Earnings quality is poor.,TRADE ONLY,580,Open,Open,High risk trade
+CEATLTD,Reversal,71,4.4,8.1,Watchlist. Margins are weak. Needs price confirmation.,WATCH,Above 3950,---,---,Needs confirmation
