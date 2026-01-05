@@ -6,10 +6,13 @@ from typing import List
 from datetime import datetime
 import csv
 from pathlib import Path
+import re
 
-from src.models.stock import Stock
+from src.models.stock import Stock, CustomCondition
 from src.services.price_fetcher import PriceFetcher
 from src.services.alerter import Alerter, Alert
+from src.services.metrics_fetcher import MetricsFetcher
+from src.services.technical_indicators import TechnicalIndicators
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +24,47 @@ class StockMonitor:
         self.config_file = config_file
         self.stocks: List[Stock] = []
         self.price_fetcher = PriceFetcher()
+        self.metrics_fetcher = MetricsFetcher()
+        self.technical_indicators = TechnicalIndicators()
         self.alerter = Alerter()
+
+    def _parse_custom_conditions(self, conditions_str: str) -> List[CustomCondition]:
+        """
+        Parse custom conditions from string format
+
+        Format: "rsi<30,ma50>price,aluminum_lme>2400"
+        Returns list of CustomCondition objects
+        """
+        conditions = []
+
+        if not conditions_str or conditions_str.strip() in ['', '---', 'None']:
+            return conditions
+
+        # Split by comma
+        parts = conditions_str.split(',')
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Match pattern: metric operator value (e.g., "rsi<30", "aluminum_lme>2400")
+            match = re.match(r'([a-z_0-9]+)\s*([<>=]+)\s*([0-9.]+)', part, re.IGNORECASE)
+
+            if match:
+                metric = match.group(1).lower()
+                operator = match.group(2)
+                threshold = float(match.group(3))
+
+                conditions.append(CustomCondition(
+                    metric=metric,
+                    operator=operator,
+                    threshold=threshold,
+                    description=part
+                ))
+                logger.debug(f"Parsed condition: {metric} {operator} {threshold}")
+
+        return conditions
 
     def load_stocks(self):
         """Load stock configuration from CSV file"""
@@ -67,6 +110,9 @@ class StockMonitor:
                         except ValueError:
                             return None
 
+                    # Parse custom conditions
+                    custom_conditions = self._parse_custom_conditions(row.get('custom_conditions', ''))
+
                     stock = Stock(
                         ticker=row.get('ticker', '').strip(),
                         strategy=row.get('strategy', '').strip(),
@@ -79,7 +125,8 @@ class StockMonitor:
                         entry_zone_max=entry_zone_max,
                         stop_loss=parse_price(row.get('stop_loss', '')),
                         target=parse_price(row.get('target', '')),
-                        notes=row.get('notes', '').strip()
+                        notes=row.get('notes', '').strip(),
+                        custom_conditions=custom_conditions
                     )
 
                     if stock.ticker:
@@ -111,6 +158,20 @@ class StockMonitor:
 
         logger.info(f"Monitoring {len(self.stocks)} stocks...")
 
+        # Collect all unique custom metrics needed
+        all_metrics = set()
+        for stock in self.stocks:
+            for condition in stock.custom_conditions:
+                # Check if it's an external metric (not a technical indicator)
+                if condition.metric not in ['rsi', 'ma20', 'ma50', 'ma200', 'price', 'pe_ratio']:
+                    all_metrics.add(condition.metric)
+
+        # Fetch all custom metrics once (for efficiency)
+        custom_metrics_values = {}
+        if all_metrics:
+            logger.info(f"Fetching {len(all_metrics)} custom metrics...")
+            custom_metrics_values = self.metrics_fetcher.get_multiple_metrics(list(all_metrics))
+
         for stock in self.stocks:
             try:
                 # Fetch current price
@@ -124,7 +185,24 @@ class StockMonitor:
                 stock.current_price = price
                 stock.last_checked = datetime.now()
 
-                # Check alert conditions
+                # Fetch technical indicators if needed
+                if stock.custom_conditions:
+                    needs_indicators = any(
+                        c.metric in ['rsi', 'ma20', 'ma50', 'ma200']
+                        for c in stock.custom_conditions
+                    )
+
+                    if needs_indicators:
+                        indicators = self.technical_indicators.get_all_indicators(stock.ticker_symbol)
+                        stock.technical_indicators = indicators
+
+                    # Set custom metrics for this stock
+                    stock.custom_metrics = {
+                        metric: custom_metrics_values.get(metric)
+                        for metric in all_metrics
+                    }
+
+                # Check alert conditions (price-based + custom)
                 conditions = stock.get_alert_conditions(price)
 
                 if conditions:
