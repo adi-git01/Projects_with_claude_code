@@ -48,13 +48,19 @@ class GeminiService:
             Dict with product info and deals
         """
         try:
-            # Default platforms if not specified
+            # Default platforms if not specified - Expanded list
             if not platforms:
                 platforms = [
-                    # E-commerce
-                    'amazon.in', 'flipkart.com', 'myntra.com',
+                    # Major E-commerce
+                    'amazon.in', 'flipkart.com', 'myntra.com', 'ajio.com', 'meesho.com',
+                    'nykaa.com', 'tatacliq.com', 'snapdeal.com', 'jiomart.com',
+                    # Electronics
+                    'croma.com', 'reliancedigital.in', 'vijaysales.com',
+                    # Groceries & Essentials
+                    'bigbasket.com', 'pharmeasy.in', 'netmeds.com',
                     # Quick-commerce
-                    'blinkit.com', 'zepto.com', 'swiggy.com/instamart'
+                    'blinkit.com', 'zepto.com', 'swiggy.com/instamart',
+                    'bigbasket.com/bbnow', 'dunzo.com', 'amazon.in/fresh'
                 ]
 
             # Build comprehensive prompt for Gemini
@@ -83,14 +89,20 @@ class GeminiService:
     ) -> str:
         """Build comprehensive search prompt for Gemini"""
 
-        cards_info = {
-            'hdfc-regalia-gold': 'HDFC Regalia Gold (4 reward points per ₹100)',
-            'hdfc-millennia': 'HDFC Millennia (5% cashback)',
-            'icici-amazon-pay': 'ICICI Amazon Pay (5% unlimited cashback)',
-            'axis-airtel-rupay': 'Axis Airtel Rupay (10% cashback on quick-commerce)'
-        }
+        # Import card database
+        from models.all_credit_cards import get_card_by_id
 
-        selected_cards_str = ', '.join([cards_info.get(c, c) for c in selected_cards])
+        # Build card info strings
+        cards_info_list = []
+        for card_id in selected_cards:
+            card = get_card_by_id(card_id)
+            if card:
+                reward_text = f"{card.base_reward}%" if card.type == 'cashback' else f"{card.base_reward} pts/₹100"
+                cards_info_list.append(f"{card.bank} {card.name} ({reward_text})")
+            else:
+                cards_info_list.append(card_id)
+
+        selected_cards_str = ', '.join(cards_info_list)
 
         prompt = f"""You are a shopping deal intelligence agent. Search the web for the best prices and offers for this product.
 
@@ -99,8 +111,8 @@ PRODUCT QUERY: {query}
 AVAILABLE CREDIT CARDS: {selected_cards_str}
 
 PLATFORMS TO SEARCH:
-E-Commerce: Amazon India, Flipkart, Myntra
-Quick-Commerce: Blinkit, Zepto, Swiggy Instamart
+E-Commerce: Amazon India, Flipkart, Myntra, AJIO, Meesho, Nykaa, Tata CLiQ, Snapdeal, JioMart, Croma, Reliance Digital, BigBasket
+Quick-Commerce: Blinkit, Zepto, Swiggy Instamart, BB Now, Dunzo Daily, Amazon Fresh, Flipkart Quick, JioMart Express
 
 YOUR TASK:
 1. Identify the exact product name and specifications

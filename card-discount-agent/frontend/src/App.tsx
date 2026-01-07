@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import SearchBar from './components/SearchBar';
-import CardSelector from './components/CardSelector';
+import CardSelectorAutocomplete from './components/CardSelectorAutocomplete';
 import ProgressTracker from './components/ProgressTracker';
 import DealsComparison from './components/DealsComparison';
 import { searchDeals } from './services/api';
@@ -8,7 +8,7 @@ import type { SearchResponse, SearchProgress } from './types';
 import { Sparkles } from 'lucide-react';
 
 function App() {
-  const [selectedCards, setSelectedCards] = useState<string[]>(['hdfc-millennia', 'icici-amazon-pay']);
+  const [selectedCards, setSelectedCards] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResponse | null>(null);
   const [progress, setProgress] = useState<SearchProgress[]>([]);
@@ -107,7 +107,7 @@ function App() {
 
         {/* Card Selector */}
         <div className="mb-8">
-          <CardSelector
+          <CardSelectorAutocomplete
             selectedCards={selectedCards}
             onSelectionChange={setSelectedCards}
           />

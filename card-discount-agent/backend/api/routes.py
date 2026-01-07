@@ -14,7 +14,7 @@ from models.schemas import (
     CreditCard,
     ErrorResponse
 )
-from models.credit_cards import get_cards_by_ids, CREDIT_CARDS
+from models.all_credit_cards import get_cards_by_ids, ALL_INDIAN_CARDS
 from services.gemini_service import GeminiService
 from services.discount_calculator import DiscountCalculator
 
@@ -121,8 +121,8 @@ async def search_deals(
 
 @router.get("/cards", response_model=List[CreditCard])
 async def get_supported_cards() -> List[CreditCard]:
-    """Get list of supported credit cards"""
-    return list(CREDIT_CARDS.values())
+    """Get list of all supported credit cards (80+ cards)"""
+    return list(ALL_INDIAN_CARDS.values())
 
 @router.get("/health")
 async def health_check():
