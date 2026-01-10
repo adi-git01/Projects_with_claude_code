@@ -6,7 +6,7 @@ Calculates effective prices based on card benefits
 import logging
 from typing import List, Tuple, Optional
 from models.schemas import Discount, CreditCard, ProductDeal
-from models.credit_cards import get_card_by_id
+from models.all_credit_cards import get_card_by_id
 
 logger = logging.getLogger(__name__)
 
