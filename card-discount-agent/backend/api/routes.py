@@ -144,3 +144,23 @@ async def get_supported_cards() -> List[CreditCard]:
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "card-discount-agent"}
+
+@router.get("/stats")
+async def get_stats(request: Request):
+    """Get API usage statistics (cache, rate limiter)"""
+    gemini_service = request.app.state.gemini_service
+
+    # Get rate limiter stats
+    rate_stats = gemini_service.rate_limiter.get_stats()
+
+    # Get cache stats
+    cache_stats = {
+        "size": len(gemini_service.cache),
+        "ttl_seconds": gemini_service.cache_ttl
+    }
+
+    return {
+        "rate_limiter": rate_stats,
+        "cache": cache_stats,
+        "status": "healthy"
+    }

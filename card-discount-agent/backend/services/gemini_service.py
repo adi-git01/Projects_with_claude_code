@@ -7,9 +7,11 @@ import os
 import logging
 import json
 import time
+import hashlib
 from typing import Dict, Any, List, Optional
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
+from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,19 @@ class GeminiService:
             tools='google_search_retrieval'
         )
 
-        logger.info("Gemini service initialized with search grounding")
+        # Rate limiter: 10 requests per minute (safe buffer under 15 RPM limit)
+        self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
+
+        # In-memory cache: store results for 1 hour
+        self.cache = {}
+        self.cache_ttl = 3600  # 1 hour in seconds
+
+        logger.info("Gemini service initialized with search grounding, rate limiting (10 RPM), and caching")
+
+    def _get_cache_key(self, query: str, selected_cards: List[str]) -> str:
+        """Generate cache key from query + cards"""
+        data = f"{query}:{','.join(sorted(selected_cards))}"
+        return hashlib.md5(data.encode()).hexdigest()
 
     async def search_product_deals(
         self,
@@ -49,6 +63,19 @@ class GeminiService:
         Returns:
             Dict with product info and deals
         """
+        # Check cache first
+        cache_key = self._get_cache_key(query, selected_cards)
+
+        if cache_key in self.cache:
+            cached_data, timestamp = self.cache[cache_key]
+            if time.time() - timestamp < self.cache_ttl:
+                logger.info(f"✅ Cache HIT for query: {query[:50]}... (saved API call)")
+                return cached_data
+            else:
+                # Cache expired
+                logger.debug(f"Cache EXPIRED for query: {query[:50]}...")
+                del self.cache[cache_key]
+
         # Default platforms if not specified - Expanded list
         if not platforms:
             platforms = [
@@ -67,7 +94,11 @@ class GeminiService:
         # Build comprehensive prompt for Gemini
         prompt = self._build_search_prompt(query, selected_cards, platforms)
 
-        logger.info(f"Searching for deals: {query[:100]}...")
+        logger.info(f"Searching for deals: {query[:100]}... (cache miss)")
+        logger.info(f"Prompt size: ~{len(prompt)} chars (~{len(prompt)//4} tokens)")
+
+        # Wait if needed to respect rate limits (10 RPM)
+        self.rate_limiter.wait_if_needed()
 
         # Retry logic for rate limits
         max_retries = 3
@@ -82,6 +113,11 @@ class GeminiService:
                 result = self._parse_gemini_response(response.text)
 
                 logger.info(f"Found {len(result.get('deals', []))} deals")
+
+                # Store in cache
+                self.cache[cache_key] = (result, time.time())
+                logger.debug(f"Cached result for query: {query[:50]}...")
+
                 return result
 
             except google_exceptions.ResourceExhausted as e:
@@ -126,75 +162,38 @@ class GeminiService:
 
         selected_cards_str = ', '.join(cards_info_list)
 
-        prompt = f"""You are a shopping deal intelligence agent. Search the web for the best prices and offers for this product.
+        # OPTIMIZED PROMPT - Reduced token usage by ~60%
+        prompt = f"""Find best prices for: {query}
 
-PRODUCT QUERY: {query}
+Cards: {selected_cards_str}
 
-AVAILABLE CREDIT CARDS: {selected_cards_str}
+Search: Amazon, Flipkart, Myntra, AJIO, Meesho, Blinkit, Zepto, Swiggy Instamart
 
-PLATFORMS TO SEARCH:
-E-Commerce: Amazon India, Flipkart, Myntra, AJIO, Meesho, Nykaa, Tata CLiQ, Snapdeal, JioMart, Croma, Reliance Digital, BigBasket
-Quick-Commerce: Blinkit, Zepto, Swiggy Instamart, BB Now, Dunzo Daily, Amazon Fresh, Flipkart Quick, JioMart Express
-
-YOUR TASK:
-1. Identify the exact product name and specifications
-2. Search for current prices on each platform
-3. Find ALL active bank offers and discounts (especially for the cards mentioned)
-4. Find available coupon codes (like WELCOME100, BRAND20, etc.)
-5. Check delivery charges
-6. Verify stock availability
-
-IMPORTANT - CARD DISCOUNT PRIORITY:
-1. Instant Discounts (best - immediate price reduction)
-2. High % Cashback (10% on Axis Airtel for quick-commerce)
-3. Flat Cashback (5% on ICICI Amazon Pay, HDFC Millennia)
-4. Reward Points (last resort - HDFC Regalia Gold)
-
-For each platform, provide:
-- Platform name and type (ecommerce/quickcommerce)
-- Product URL
-- Base price (in ₹)
-- Delivery charge
-- ALL applicable discounts with these details:
-  * Type: instant/cashback/coupon/reward_points
-  * Value: amount or percentage
-  * Description (e.g., "HDFC Millennia 5% instant discount")
-  * Card required (if any)
-  * Validity date (if mentioned)
-- Stock status
-
-OUTPUT FORMAT (JSON):
+Return JSON:
 {{
-    "product_name": "Exact product name",
-    "product_image": "Image URL if found",
-    "deals": [
+  "product_name": "...",
+  "product_image": "...",
+  "deals": [
+    {{
+      "platform": {{"name": "Amazon", "type": "ecommerce", "url": "..."}},
+      "base_price": 1299,
+      "delivery_charge": 40,
+      "in_stock": true,
+      "discounts": [
         {{
-            "platform": {{"name": "Amazon", "type": "ecommerce", "url": "product_url"}},
-            "base_price": 1299,
-            "delivery_charge": 40,
-            "in_stock": true,
-            "discounts": [
-                {{
-                    "type": "instant",
-                    "value": 10,
-                    "is_percentage": true,
-                    "description": "HDFC Millennia 10% instant discount",
-                    "card_required": "hdfc-millennia",
-                    "max_cap": 150
-                }},
-                {{
-                    "type": "coupon",
-                    "value": 100,
-                    "is_percentage": false,
-                    "description": "WELCOME100 coupon",
-                    "min_purchase": 999
-                }}
-            ]
+          "type": "instant/cashback/coupon",
+          "value": 10,
+          "is_percentage": true,
+          "description": "...",
+          "card_required": "hdfc-millennia",
+          "max_cap": 150
         }}
-    ]
+      ]
+    }}
+  ]
 }}
 
-Search the web NOW and provide accurate, current information. Be thorough!"""
+Priority: instant discounts > cashback > coupons. Include only available offers."""
 
         return prompt
 
