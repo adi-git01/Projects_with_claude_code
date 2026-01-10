@@ -6,8 +6,10 @@ Uses Gemini 2.5 Flash to find prices, offers, and discounts
 import os
 import logging
 import json
+import time
 from typing import Dict, Any, List, Optional
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -47,39 +49,59 @@ class GeminiService:
         Returns:
             Dict with product info and deals
         """
-        try:
-            # Default platforms if not specified - Expanded list
-            if not platforms:
-                platforms = [
-                    # Major E-commerce
-                    'amazon.in', 'flipkart.com', 'myntra.com', 'ajio.com', 'meesho.com',
-                    'nykaa.com', 'tatacliq.com', 'snapdeal.com', 'jiomart.com',
-                    # Electronics
-                    'croma.com', 'reliancedigital.in', 'vijaysales.com',
-                    # Groceries & Essentials
-                    'bigbasket.com', 'pharmeasy.in', 'netmeds.com',
-                    # Quick-commerce
-                    'blinkit.com', 'zepto.com', 'swiggy.com/instamart',
-                    'bigbasket.com/bbnow', 'dunzo.com', 'amazon.in/fresh'
-                ]
+        # Default platforms if not specified - Expanded list
+        if not platforms:
+            platforms = [
+                # Major E-commerce
+                'amazon.in', 'flipkart.com', 'myntra.com', 'ajio.com', 'meesho.com',
+                'nykaa.com', 'tatacliq.com', 'snapdeal.com', 'jiomart.com',
+                # Electronics
+                'croma.com', 'reliancedigital.in', 'vijaysales.com',
+                # Groceries & Essentials
+                'bigbasket.com', 'pharmeasy.in', 'netmeds.com',
+                # Quick-commerce
+                'blinkit.com', 'zepto.com', 'swiggy.com/instamart',
+                'bigbasket.com/bbnow', 'dunzo.com', 'amazon.in/fresh'
+            ]
 
-            # Build comprehensive prompt for Gemini
-            prompt = self._build_search_prompt(query, selected_cards, platforms)
+        # Build comprehensive prompt for Gemini
+        prompt = self._build_search_prompt(query, selected_cards, platforms)
 
-            logger.info(f"Searching for deals: {query[:100]}...")
+        logger.info(f"Searching for deals: {query[:100]}...")
 
-            # Generate with search grounding
-            response = self.model.generate_content(prompt)
+        # Retry logic for rate limits
+        max_retries = 3
+        base_delay = 2  # seconds
 
-            # Parse response
-            result = self._parse_gemini_response(response.text)
+        for attempt in range(max_retries + 1):
+            try:
+                # Generate with search grounding
+                response = self.model.generate_content(prompt)
 
-            logger.info(f"Found {len(result.get('deals', []))} deals")
-            return result
+                # Parse response
+                result = self._parse_gemini_response(response.text)
 
-        except Exception as e:
-            logger.error(f"Error in search_product_deals: {e}")
-            raise
+                logger.info(f"Found {len(result.get('deals', []))} deals")
+                return result
+
+            except google_exceptions.ResourceExhausted as e:
+                # Rate limit hit
+                if attempt < max_retries:
+                    # Exponential backoff: 2s, 4s, 8s
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"Rate limit hit. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                else:
+                    # Final attempt failed
+                    logger.error("Rate limit exhausted after all retries")
+                    raise ValueError(
+                        "Gemini API rate limit exceeded. Please try again in a few minutes. "
+                        "The free tier has limits on requests per minute and per day."
+                    ) from e
+
+            except Exception as e:
+                logger.error(f"Error in search_product_deals: {e}")
+                raise
 
     def _build_search_prompt(
         self,

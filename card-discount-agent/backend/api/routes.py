@@ -115,6 +115,22 @@ async def search_deals(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        # Rate limit or validation errors
+        error_msg = str(e)
+        if "rate limit" in error_msg.lower():
+            logger.warning(f"Rate limit hit: {error_msg}")
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "rate_limit_exceeded",
+                    "message": error_msg,
+                    "suggestion": "Please wait a few minutes and try again. Consider upgrading to Gemini API paid tier for higher limits."
+                }
+            )
+        else:
+            logger.error(f"Validation error: {e}")
+            raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error in search_deals: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
