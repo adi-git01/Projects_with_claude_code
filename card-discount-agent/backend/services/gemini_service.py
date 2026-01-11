@@ -26,20 +26,22 @@ class GeminiService:
 
         genai.configure(api_key=api_key)
 
-        # Use Gemini 2.5 Flash Preview with search grounding
+        # Use Gemini 2.0 Flash Thinking (better limits than exp)
+        # 2.0-flash-thinking-exp: Higher RPM/RPD limits
         self.model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-exp',
+            model_name='gemini-2.0-flash-thinking-exp',
             tools='google_search_retrieval'
         )
 
-        # Rate limiter: 10 requests per minute (safe buffer under 15 RPM limit)
-        self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
+        # Rate limiter: 4 requests per minute (safe buffer under 5 RPM limit for 2026 free tier)
+        # Free tier as of Jan 2026: 5 RPM, so we use 4 RPM to be safe
+        self.rate_limiter = RateLimiter(max_requests=4, time_window=60)
 
         # In-memory cache: store results for 1 hour
         self.cache = {}
         self.cache_ttl = 3600  # 1 hour in seconds
 
-        logger.info("Gemini service initialized with search grounding, rate limiting (10 RPM), and caching")
+        logger.info("Gemini service initialized with search grounding, rate limiting (4 RPM - 2026 limits), and caching")
 
     def _get_cache_key(self, query: str, selected_cards: List[str]) -> str:
         """Generate cache key from query + cards"""
@@ -97,12 +99,12 @@ class GeminiService:
         logger.info(f"Searching for deals: {query[:100]}... (cache miss)")
         logger.info(f"Prompt size: ~{len(prompt)} chars (~{len(prompt)//4} tokens)")
 
-        # Wait if needed to respect rate limits (10 RPM)
+        # Wait if needed to respect rate limits (4 RPM for 2026 free tier)
         self.rate_limiter.wait_if_needed()
 
-        # Retry logic for rate limits
+        # Retry logic for rate limits with longer delays
         max_retries = 3
-        base_delay = 2  # seconds
+        base_delay = 15  # seconds (increased from 2s to respect 5 RPM = 12s between calls)
 
         for attempt in range(max_retries + 1):
             try:
@@ -123,7 +125,7 @@ class GeminiService:
             except google_exceptions.ResourceExhausted as e:
                 # Rate limit hit
                 if attempt < max_retries:
-                    # Exponential backoff: 2s, 4s, 8s
+                    # Exponential backoff: 15s, 30s, 60s (respects 5 RPM limit)
                     delay = base_delay * (2 ** attempt)
                     logger.warning(f"Rate limit hit. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
                     time.sleep(delay)
@@ -131,8 +133,10 @@ class GeminiService:
                     # Final attempt failed
                     logger.error("Rate limit exhausted after all retries")
                     raise ValueError(
-                        "Gemini API rate limit exceeded. Please try again in a few minutes. "
-                        "The free tier has limits on requests per minute and per day."
+                        "Gemini API rate limit exceeded (5 RPM / Daily quota). "
+                        "Please wait 10-15 minutes and try again. "
+                        "Free tier: 5 requests/min, limited daily quota. "
+                        "Consider upgrading for higher limits."
                     ) from e
 
             except Exception as e:
