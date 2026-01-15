@@ -26,22 +26,22 @@ class GeminiService:
 
         genai.configure(api_key=api_key)
 
-        # Use Gemini 2.0 Flash Thinking (better limits than exp)
-        # 2.0-flash-thinking-exp: Higher RPM/RPD limits
+        # Use Gemini without search grounding (for testing/higher quota)
+        # With grounding: 2-5 RPM, 50-100 RPD
+        # Without grounding: 15 RPM, 1500 RPD
         self.model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-thinking-exp',
-            tools='google_search_retrieval'
+            model_name='gemini-1.5-flash'  # Using 1.5-flash (confirmed 15 RPM, 1500 RPD)
+            # No tools = no search grounding = higher limits
         )
 
-        # Rate limiter: 4 requests per minute (safe buffer under 5 RPM limit for 2026 free tier)
-        # Free tier as of Jan 2026: 5 RPM, so we use 4 RPM to be safe
-        self.rate_limiter = RateLimiter(max_requests=4, time_window=60)
+        # Rate limiter: 10 requests per minute (safe buffer under 15 RPM for non-grounded model)
+        self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
 
         # In-memory cache: store results for 1 hour
         self.cache = {}
         self.cache_ttl = 3600  # 1 hour in seconds
 
-        logger.info("Gemini service initialized with search grounding, rate limiting (4 RPM - 2026 limits), and caching")
+        logger.info("Gemini service initialized WITHOUT search grounding (testing mode: 10 RPM, ~1500 RPD)")
 
     def _get_cache_key(self, query: str, selected_cards: List[str]) -> str:
         """Generate cache key from query + cards"""
@@ -166,38 +166,74 @@ class GeminiService:
 
         selected_cards_str = ', '.join(cards_info_list)
 
-        # OPTIMIZED PROMPT - Reduced token usage by ~60%
-        prompt = f"""Find best prices for: {query}
+        # PROMPT FOR NON-GROUNDED MODEL - Returns example data based on training
+        prompt = f"""Based on your training data about Indian e-commerce, provide estimated pricing for this product: {query}
 
-Cards: {selected_cards_str}
+Credit Cards Available: {selected_cards_str}
 
-Search: Amazon, Flipkart, Myntra, AJIO, Meesho, Blinkit, Zepto, Swiggy Instamart
+Platforms: Amazon, Flipkart, Myntra, Blinkit, Zepto, Swiggy Instamart
 
-Return JSON:
+IMPORTANT: Since you don't have live web access, provide realistic EXAMPLE prices and offers based on:
+1. Typical pricing for this product category in India
+2. Common bank offers for the mentioned cards
+3. Typical delivery charges
+4. Standard discount patterns
+
+Return VALID JSON (no explanations, just JSON):
 {{
-  "product_name": "...",
-  "product_image": "...",
+  "product_name": "Full product name",
+  "product_image": null,
   "deals": [
     {{
-      "platform": {{"name": "Amazon", "type": "ecommerce", "url": "..."}},
-      "base_price": 1299,
+      "platform": {{"name": "Amazon", "type": "ecommerce", "url": null}},
+      "base_price": 2499,
       "delivery_charge": 40,
       "in_stock": true,
       "discounts": [
         {{
-          "type": "instant/cashback/coupon",
+          "type": "instant",
           "value": 10,
           "is_percentage": true,
-          "description": "...",
+          "description": "HDFC Millennia 10% instant discount",
           "card_required": "hdfc-millennia",
+          "max_cap": 200
+        }},
+        {{
+          "type": "cashback",
+          "value": 5,
+          "is_percentage": true,
+          "description": "ICICI Amazon Pay 5% cashback",
+          "card_required": "icici-amazon-pay"
+        }}
+      ]
+    }},
+    {{
+      "platform": {{"name": "Flipkart", "type": "ecommerce", "url": null}},
+      "base_price": 2399,
+      "delivery_charge": 0,
+      "in_stock": true,
+      "discounts": [
+        {{
+          "type": "instant",
+          "value": 150,
+          "is_percentage": false,
+          "description": "Axis Airtel 10% instant discount",
+          "card_required": "axis-airtel-rupay",
           "max_cap": 150
         }}
       ]
+    }},
+    {{
+      "platform": {{"name": "Blinkit", "type": "quickcommerce", "url": null}},
+      "base_price": 2599,
+      "delivery_charge": 25,
+      "in_stock": true,
+      "discounts": []
     }}
   ]
 }}
 
-Priority: instant discounts > cashback > coupons. Include only available offers."""
+Provide at least 3 deals with realistic prices for India. Include discounts for the mentioned cards."""
 
         return prompt
 
