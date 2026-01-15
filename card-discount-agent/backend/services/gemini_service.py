@@ -26,22 +26,32 @@ class GeminiService:
 
         genai.configure(api_key=api_key)
 
-        # Use Gemini 2.0 Flash WITHOUT search grounding (for testing/higher quota)
-        # With grounding: 2-5 RPM, 50-100 RPD
-        # Without grounding: 15 RPM, 1500 RPD
-        self.model = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-exp'  # Known working model, no search grounding
-            # No tools parameter = no search grounding = higher limits
-        )
+        # Check if search grounding should be enabled (from environment variable)
+        enable_grounding = os.getenv("ENABLE_SEARCH_GROUNDING", "false").lower() == "true"
+        self.search_grounding_enabled = enable_grounding
 
-        # Rate limiter: 10 requests per minute (safe buffer under 15 RPM for non-grounded model)
-        self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
+        if enable_grounding:
+            # WITH search grounding: Real-time web data, stricter limits
+            self.model = genai.GenerativeModel(
+                model_name='gemini-2.5-flash',
+                tools='google_search_retrieval'
+            )
+            # Rate limiter: 2 RPM (very conservative for grounded API)
+            self.rate_limiter = RateLimiter(max_requests=2, time_window=60)
+            logger.info("🌐 Gemini 2.5 Flash WITH search grounding (production: 2 RPM, ~50-100 RPD, real prices)")
+        else:
+            # WITHOUT search grounding: Example data, higher quota
+            self.model = genai.GenerativeModel(
+                model_name='gemini-2.5-flash'
+                # No tools parameter = no search grounding = higher limits
+            )
+            # Rate limiter: 10 RPM (safe buffer under 15 RPM for non-grounded)
+            self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
+            logger.info("⚡ Gemini 2.5 Flash WITHOUT search grounding (testing: 10 RPM, ~1500 RPD, example data)")
 
         # In-memory cache: store results for 1 hour
         self.cache = {}
         self.cache_ttl = 3600  # 1 hour in seconds
-
-        logger.info("Gemini service initialized WITHOUT search grounding (testing mode: 10 RPM, ~1500 RPD)")
 
     def _get_cache_key(self, query: str, selected_cards: List[str]) -> str:
         """Generate cache key from query + cards"""
@@ -166,20 +176,44 @@ class GeminiService:
 
         selected_cards_str = ', '.join(cards_info_list)
 
-        # PROMPT FOR NON-GROUNDED MODEL - Returns example data based on training
-        prompt = f"""Based on your training data about Indian e-commerce, provide estimated pricing for this product: {query}
+        # Build different prompts based on search grounding status
+        if self.search_grounding_enabled:
+            # PROMPT WITH SEARCH GROUNDING - Searches live web
+            prompt = f"""Search the web NOW for current prices and offers for: {query}
 
-Credit Cards Available: {selected_cards_str}
+Cards: {selected_cards_str}
 
-Platforms: Amazon, Flipkart, Myntra, Blinkit, Zepto, Swiggy Instamart
+Search platforms: Amazon India, Flipkart, Myntra, Blinkit, Zepto, Swiggy Instamart
 
-IMPORTANT: Since you don't have live web access, provide realistic EXAMPLE prices and offers based on:
-1. Typical pricing for this product category in India
-2. Common bank offers for the mentioned cards
-3. Typical delivery charges
-4. Standard discount patterns
+Return JSON with REAL, CURRENT data:
+{{
+  "product_name": "...",
+  "product_image": "...",
+  "deals": [
+    {{
+      "platform": {{"name": "Amazon", "type": "ecommerce", "url": "actual_url"}},
+      "base_price": 2499,
+      "delivery_charge": 40,
+      "in_stock": true,
+      "discounts": [
+        {{"type": "instant", "value": 10, "is_percentage": true, "description": "...", "card_required": "hdfc-millennia", "max_cap": 200}}
+      ]
+    }}
+  ]
+}}
 
-Return VALID JSON (no explanations, just JSON):
+Find actual prices, real URLs, current offers."""
+        else:
+            # PROMPT WITHOUT SEARCH GROUNDING - Returns example data
+            prompt = f"""Based on training data, provide realistic EXAMPLE pricing for: {query}
+
+Cards: {selected_cards_str}
+
+Platforms: Amazon, Flipkart, Myntra, Blinkit, Zepto
+
+IMPORTANT: No live web access. Provide realistic examples based on typical Indian pricing.
+
+Return VALID JSON (no explanations):
 {{
   "product_name": "Full product name",
   "product_image": null,
@@ -190,21 +224,8 @@ Return VALID JSON (no explanations, just JSON):
       "delivery_charge": 40,
       "in_stock": true,
       "discounts": [
-        {{
-          "type": "instant",
-          "value": 10,
-          "is_percentage": true,
-          "description": "HDFC Millennia 10% instant discount",
-          "card_required": "hdfc-millennia",
-          "max_cap": 200
-        }},
-        {{
-          "type": "cashback",
-          "value": 5,
-          "is_percentage": true,
-          "description": "ICICI Amazon Pay 5% cashback",
-          "card_required": "icici-amazon-pay"
-        }}
+        {{"type": "instant", "value": 10, "is_percentage": true, "description": "HDFC Millennia 10% instant", "card_required": "hdfc-millennia", "max_cap": 200}},
+        {{"type": "cashback", "value": 5, "is_percentage": true, "description": "ICICI Amazon Pay 5% cashback", "card_required": "icici-amazon-pay"}}
       ]
     }},
     {{
@@ -213,14 +234,7 @@ Return VALID JSON (no explanations, just JSON):
       "delivery_charge": 0,
       "in_stock": true,
       "discounts": [
-        {{
-          "type": "instant",
-          "value": 150,
-          "is_percentage": false,
-          "description": "Axis Airtel 10% instant discount",
-          "card_required": "axis-airtel-rupay",
-          "max_cap": 150
-        }}
+        {{"type": "instant", "value": 150, "is_percentage": false, "description": "Axis Airtel instant", "card_required": "axis-airtel-rupay", "max_cap": 150}}
       ]
     }},
     {{
@@ -233,7 +247,7 @@ Return VALID JSON (no explanations, just JSON):
   ]
 }}
 
-Provide at least 3 deals with realistic prices for India. Include discounts for the mentioned cards."""
+Provide at least 3 deals with realistic prices for India."""
 
         return prompt
 
