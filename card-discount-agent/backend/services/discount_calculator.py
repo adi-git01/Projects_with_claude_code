@@ -90,12 +90,6 @@ class DiscountCalculator:
         best_price = float('inf')
         best_savings = 0
 
-        # Check if deal has ANY discounts matching ANY user card
-        deal_has_user_discounts = any(
-            d.card_required and d.card_required in [c.id for c in available_cards]
-            for d in discounts
-        )
-
         for card in available_cards:
             # Get card-specific discounts
             card_discounts = [
@@ -103,22 +97,25 @@ class DiscountCalculator:
                 if not d.card_required or d.card_required == card.id
             ]
 
-            # Add base card reward ONLY if:
-            # 1. This card has no matching discounts in this deal, AND
-            # 2. Deal has NO discounts for ANY user cards (avoid ghost discount dominating)
+            # Add base card reward if this card has no specific discount in the deal
+            # This allows cards like Axis Airtel (10% base) to compete fairly
             has_instant_or_cashback = any(
-                d.type in ['instant', 'cashback'] for d in card_discounts
+                d.type in ['instant', 'cashback'] and d.card_required == card.id
+                for d in card_discounts
             )
 
-            if not has_instant_or_cashback and card.type == 'cashback' and not deal_has_user_discounts:
-                # Add base cashback (only if deal has NO user-specific discounts)
+            if not has_instant_or_cashback and card.type == 'cashback':
+                # Add base cashback as a competing option
+                # Use reasonable cap based on base reward rate
+                cap_amount = min(5000, int(500 * card.base_reward))  # Higher rewards get higher caps
+
                 card_discounts.append(Discount(
                     type='cashback',
                     value=card.base_reward,
                     is_percentage=True,
-                    description=f'{card.bank} {card.name} base cashback',
+                    description=f'{card.bank} {card.name} {card.base_reward}% base cashback',
                     card_required=card.id,
-                    max_cap=1000  # Cap ghost discounts to prevent domination
+                    max_cap=cap_amount
                 ))
 
             effective_price, savings = DiscountCalculator.calculate_effective_price(
