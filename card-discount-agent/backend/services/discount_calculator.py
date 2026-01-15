@@ -91,33 +91,15 @@ class DiscountCalculator:
         best_savings = 0
 
         for card in available_cards:
-            # Get card-specific discounts
+            # Get card-specific discounts ONLY from the deal
+            # No assumptions about base rewards - only use verified discounts
             card_discounts = [
                 d for d in discounts
                 if not d.card_required or d.card_required == card.id
             ]
 
-            # Add base card reward if this card has no specific discount in the deal
-            # This allows cards like Axis Airtel (10% base) to compete fairly
-            has_instant_or_cashback = any(
-                d.type in ['instant', 'cashback'] and d.card_required == card.id
-                for d in card_discounts
-            )
-
-            if not has_instant_or_cashback and card.type == 'cashback':
-                # Add base cashback as a competing option
-                # Use reasonable cap based on base reward rate
-                cap_amount = min(5000, int(500 * card.base_reward))  # Higher rewards get higher caps
-
-                card_discounts.append(Discount(
-                    type='cashback',
-                    value=card.base_reward,
-                    is_percentage=True,
-                    description=f'{card.bank} {card.name} {card.base_reward}% base cashback',
-                    card_required=card.id,
-                    max_cap=cap_amount
-                ))
-
+            # Calculate effective price using ONLY verified discounts
+            # If a card should win, it must have an explicit discount in the deal
             effective_price, savings = DiscountCalculator.calculate_effective_price(
                 base_price,
                 delivery_charge,
