@@ -90,6 +90,12 @@ class DiscountCalculator:
         best_price = float('inf')
         best_savings = 0
 
+        # Check if deal has ANY discounts matching ANY user card
+        deal_has_user_discounts = any(
+            d.card_required and d.card_required in [c.id for c in available_cards]
+            for d in discounts
+        )
+
         for card in available_cards:
             # Get card-specific discounts
             card_discounts = [
@@ -97,19 +103,22 @@ class DiscountCalculator:
                 if not d.card_required or d.card_required == card.id
             ]
 
-            # Add base card reward if no better discount exists
+            # Add base card reward ONLY if:
+            # 1. This card has no matching discounts in this deal, AND
+            # 2. Deal has NO discounts for ANY user cards (avoid ghost discount dominating)
             has_instant_or_cashback = any(
                 d.type in ['instant', 'cashback'] for d in card_discounts
             )
 
-            if not has_instant_or_cashback and card.type == 'cashback':
-                # Add base cashback
+            if not has_instant_or_cashback and card.type == 'cashback' and not deal_has_user_discounts:
+                # Add base cashback (only if deal has NO user-specific discounts)
                 card_discounts.append(Discount(
                     type='cashback',
                     value=card.base_reward,
                     is_percentage=True,
                     description=f'{card.bank} {card.name} base cashback',
-                    card_required=card.id
+                    card_required=card.id,
+                    max_cap=1000  # Cap ghost discounts to prevent domination
                 ))
 
             effective_price, savings = DiscountCalculator.calculate_effective_price(

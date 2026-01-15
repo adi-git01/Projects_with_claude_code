@@ -249,28 +249,33 @@ class GeminiService:
             # PROMPT WITH SEARCH GROUNDING - Searches live web
             prompt = f"""Search the web NOW for current prices and offers for: {query}
 
-Cards: {selected_cards_str}
+User's Cards: {selected_cards_str}
 
 Search platforms: Amazon India, Flipkart, Myntra, Blinkit, Zepto, Swiggy Instamart
 
-Return JSON with REAL, CURRENT data:
+CRITICAL: Return ONLY valid JSON (no explanations, no markdown, no extra text)
+
 {{
-  "product_name": "...",
-  "product_image": "...",
+  "product_name": "Full product name",
+  "product_image": "URL or null",
   "deals": [
     {{
-      "platform": {{"name": "Amazon", "type": "ecommerce", "url": "actual_url"}},
-      "base_price": 2499,
-      "delivery_charge": 40,
+      "platform": {{"name": "Amazon", "type": "ecommerce", "url": "actual_product_url"}},
+      "base_price": 134900,
+      "delivery_charge": 0,
       "in_stock": true,
       "discounts": [
-        {{"type": "instant", "value": 10, "is_percentage": true, "description": "...", "card_required": "hdfc-millennia", "max_cap": 200}}
+        {{"type": "instant", "value": 10, "is_percentage": true, "description": "HDFC Bank 10% instant discount", "card_required": "hdfc-millennia", "max_cap": 1500}}
       ]
     }}
   ]
 }}
 
-Find actual prices, real URLs, current offers."""
+RULES:
+1. Find actual prices from websites
+2. Include real product URLs
+3. List ALL discounts you find for the user's cards
+4. Return ONLY the JSON object, nothing else"""
         else:
             # PROMPT WITHOUT SEARCH GROUNDING - Returns example data
             prompt = f"""Based on training data, provide realistic EXAMPLE pricing for: {query}
@@ -339,6 +344,7 @@ Generate 4-5 DIFFERENT platforms with UNIQUE names. Each discount must match one
         try:
             # Try to extract JSON from response
             # Gemini might wrap JSON in markdown code blocks
+            original_text = response_text
             response_text = response_text.strip()
 
             # Remove markdown code blocks if present
@@ -352,14 +358,21 @@ Generate 4-5 DIFFERENT platforms with UNIQUE names. Each discount must match one
 
             response_text = response_text.strip()
 
+            # Try to find JSON within the response (in case of extra text)
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                response_text = json_match.group(0)
+
             # Parse JSON
             data = json.loads(response_text)
 
             return data
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemini response as JSON: {e}")
-            logger.debug(f"Response text: {response_text[:500]}")
+            logger.error(f"❌ Failed to parse Gemini response as JSON: {e}")
+            logger.error(f"📄 Response text (first 1000 chars): {original_text[:1000]}")
+            logger.error(f"🔍 Cleaned text (first 500 chars): {response_text[:500]}")
 
             # Fallback: return empty structure
             return {
