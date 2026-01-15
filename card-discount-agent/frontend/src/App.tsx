@@ -3,6 +3,7 @@ import SearchBar from './components/SearchBar';
 import CardSelectorAutocomplete from './components/CardSelectorAutocomplete';
 import ProgressTracker from './components/ProgressTracker';
 import DealsComparison from './components/DealsComparison';
+import SearchGroundingToggle from './components/SearchGroundingToggle';
 import { searchDeals } from './services/api';
 import type { SearchResponse, SearchProgress } from './types';
 import { Sparkles } from 'lucide-react';
@@ -88,6 +89,9 @@ function App() {
                 <p className="text-sm text-gray-600">Find the best price with your cards</p>
               </div>
             </div>
+
+            {/* Search Grounding Toggle */}
+            <SearchGroundingToggle />
           </div>
         </div>
       </header>

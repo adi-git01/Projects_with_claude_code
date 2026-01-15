@@ -53,6 +53,74 @@ class GeminiService:
         self.cache = {}
         self.cache_ttl = 3600  # 1 hour in seconds
 
+    def toggle_search_grounding(self, enable: bool) -> Dict[str, Any]:
+        """
+        Dynamically toggle search grounding on/off
+
+        Args:
+            enable: True to enable grounding, False to disable
+
+        Returns:
+            Dict with new configuration details
+        """
+        if enable == self.search_grounding_enabled:
+            # Already in requested mode
+            return {
+                "changed": False,
+                "mode": "grounded" if enable else "non-grounded",
+                "message": f"Already in {'grounded' if enable else 'non-grounded'} mode"
+            }
+
+        logger.warning(f"⚠️ Toggling search grounding: {self.search_grounding_enabled} → {enable}")
+
+        # Update state
+        self.search_grounding_enabled = enable
+
+        # Recreate model with new configuration
+        if enable:
+            # WITH search grounding
+            self.model = genai.GenerativeModel(
+                model_name='gemini-2.5-flash',
+                tools='google_search_retrieval'
+            )
+            # Update rate limiter
+            self.rate_limiter = RateLimiter(max_requests=2, time_window=60)
+            logger.info("🌐 Switched to: WITH search grounding (2 RPM, real prices)")
+        else:
+            # WITHOUT search grounding
+            self.model = genai.GenerativeModel(
+                model_name='gemini-2.5-flash'
+            )
+            # Update rate limiter
+            self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
+            logger.info("⚡ Switched to: WITHOUT search grounding (10 RPM, example data)")
+
+        # Clear cache (grounded vs non-grounded data is different)
+        cache_size = len(self.cache)
+        self.cache.clear()
+        logger.info(f"🗑️ Cleared {cache_size} cached items")
+
+        return {
+            "changed": True,
+            "mode": "grounded" if enable else "non-grounded",
+            "rpm": 2 if enable else 10,
+            "rpd_estimate": "50-100" if enable else "1500",
+            "data_type": "real-time" if enable else "example",
+            "cache_cleared": cache_size,
+            "message": f"Switched to {'grounded' if enable else 'non-grounded'} mode"
+        }
+
+    def get_current_mode(self) -> Dict[str, Any]:
+        """Get current search grounding configuration"""
+        return {
+            "search_grounding_enabled": self.search_grounding_enabled,
+            "mode": "grounded" if self.search_grounding_enabled else "non-grounded",
+            "rpm": 2 if self.search_grounding_enabled else 10,
+            "rpd_estimate": "50-100" if self.search_grounding_enabled else "1500",
+            "data_type": "real-time" if self.search_grounding_enabled else "example",
+            "cache_size": len(self.cache)
+        }
+
     def _get_cache_key(self, query: str, selected_cards: List[str]) -> str:
         """Generate cache key from query + cards"""
         data = f"{query}:{','.join(sorted(selected_cards))}"

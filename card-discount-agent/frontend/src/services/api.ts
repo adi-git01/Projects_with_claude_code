@@ -53,3 +53,38 @@ export const healthCheck = async (): Promise<{ status: string }> => {
   const response = await apiClient.get('/health');
   return response.data;
 };
+
+// Search Grounding Configuration Types
+export interface SearchGroundingConfig {
+  search_grounding_enabled: boolean;
+  mode: 'grounded' | 'non-grounded';
+  rpm: number;
+  rpd_estimate: string;
+  data_type: 'real-time' | 'example';
+  cache_size: number;
+}
+
+export interface SearchGroundingToggleResponse {
+  changed: boolean;
+  mode: 'grounded' | 'non-grounded';
+  rpm: number;
+  rpd_estimate: string;
+  data_type: 'real-time' | 'example';
+  cache_cleared: number;
+  message: string;
+}
+
+// Get current search grounding configuration
+export const getSearchGroundingConfig = async (): Promise<SearchGroundingConfig> => {
+  const response = await apiClient.get<SearchGroundingConfig>('/config/search-grounding');
+  return response.data;
+};
+
+// Toggle search grounding on/off
+export const toggleSearchGrounding = async (enable: boolean): Promise<SearchGroundingToggleResponse> => {
+  const response = await apiClient.post<SearchGroundingToggleResponse>(
+    '/config/search-grounding',
+    { enable }
+  );
+  return response.data;
+};

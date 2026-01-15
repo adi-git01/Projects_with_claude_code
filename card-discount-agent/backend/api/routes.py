@@ -4,7 +4,7 @@ API Routes for Card Discount Agent
 
 import logging
 from typing import List
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Body
 
 from models.schemas import (
     SearchRequest,
@@ -164,3 +164,47 @@ async def get_stats(request: Request):
         "cache": cache_stats,
         "status": "healthy"
     }
+
+@router.get("/config/search-grounding")
+async def get_search_grounding_status(
+    gemini_service: GeminiService = Depends(get_gemini_service)
+):
+    """
+    Get current search grounding configuration
+
+    Returns:
+        - search_grounding_enabled: True if grounding is on
+        - mode: "grounded" or "non-grounded"
+        - rpm: Current rate limit (2 or 10)
+        - rpd_estimate: Estimated daily quota
+        - data_type: "real-time" or "example"
+        - cache_size: Number of cached queries
+    """
+    return gemini_service.get_current_mode()
+
+@router.post("/config/search-grounding")
+async def toggle_search_grounding(
+    enable: bool = Body(..., embed=True),
+    gemini_service: GeminiService = Depends(get_gemini_service)
+):
+    """
+    Toggle search grounding on/off at runtime
+
+    Args:
+        enable: True to enable grounding, False to disable
+
+    Returns:
+        - changed: True if mode was actually changed
+        - mode: New mode ("grounded" or "non-grounded")
+        - rpm: New rate limit
+        - rpd_estimate: New daily quota estimate
+        - data_type: Type of data returned
+        - cache_cleared: Number of cache entries cleared
+        - message: Human-readable status message
+
+    Note: Changes are not persistent - will reset to .env on backend restart
+    """
+    logger.info(f"Toggle search grounding request: enable={enable}")
+    result = gemini_service.toggle_search_grounding(enable)
+    logger.info(f"Toggle result: {result}")
+    return result
