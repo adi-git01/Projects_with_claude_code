@@ -26,12 +26,12 @@ class GeminiService:
 
         genai.configure(api_key=api_key)
 
-        # Use Gemini without search grounding (for testing/higher quota)
+        # Use Gemini 2.0 Flash WITHOUT search grounding (for testing/higher quota)
         # With grounding: 2-5 RPM, 50-100 RPD
         # Without grounding: 15 RPM, 1500 RPD
         self.model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash'  # Using 1.5-flash (confirmed 15 RPM, 1500 RPD)
-            # No tools = no search grounding = higher limits
+            model_name='gemini-2.0-flash-exp'  # Known working model, no search grounding
+            # No tools parameter = no search grounding = higher limits
         )
 
         # Rate limiter: 10 requests per minute (safe buffer under 15 RPM for non-grounded model)
