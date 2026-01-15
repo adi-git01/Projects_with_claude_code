@@ -275,13 +275,17 @@ Find actual prices, real URLs, current offers."""
             # PROMPT WITHOUT SEARCH GROUNDING - Returns example data
             prompt = f"""Based on training data, provide realistic EXAMPLE pricing for: {query}
 
-Cards: {selected_cards_str}
+User's Cards: {selected_cards_str}
 
-Platforms: Amazon, Flipkart, Myntra, Blinkit, Zepto
+CRITICAL RULES:
+1. EXACTLY 1 deal per platform (NO duplicates)
+2. MUST include AT LEAST 1 quick-commerce platform (Blinkit, Zepto, or Swiggy Instamart)
+3. Each deal MUST have at least 1 discount matching the user's selected cards
+4. Provide 4-5 different platforms (mix of ecommerce + quickcommerce)
 
 IMPORTANT: No live web access. Provide realistic examples based on typical Indian pricing.
 
-Return VALID JSON (no explanations):
+Return VALID JSON (no explanations, no markdown):
 {{
   "product_name": "Full product name",
   "product_image": null,
@@ -292,7 +296,7 @@ Return VALID JSON (no explanations):
       "delivery_charge": 40,
       "in_stock": true,
       "discounts": [
-        {{"type": "instant", "value": 10, "is_percentage": true, "description": "HDFC Millennia 10% instant", "card_required": "hdfc-millennia", "max_cap": 200}},
+        {{"type": "instant", "value": 10, "is_percentage": true, "description": "HDFC Bank 10% instant discount", "card_required": "hdfc-millennia", "max_cap": 200}},
         {{"type": "cashback", "value": 5, "is_percentage": true, "description": "ICICI Amazon Pay 5% cashback", "card_required": "icici-amazon-pay"}}
       ]
     }},
@@ -302,7 +306,7 @@ Return VALID JSON (no explanations):
       "delivery_charge": 0,
       "in_stock": true,
       "discounts": [
-        {{"type": "instant", "value": 150, "is_percentage": false, "description": "Axis Airtel instant", "card_required": "axis-airtel-rupay", "max_cap": 150}}
+        {{"type": "instant", "value": 150, "is_percentage": false, "description": "Axis Bank ₹150 instant discount", "card_required": "axis-airtel-rupay", "max_cap": 150}}
       ]
     }},
     {{
@@ -310,12 +314,23 @@ Return VALID JSON (no explanations):
       "base_price": 2599,
       "delivery_charge": 25,
       "in_stock": true,
-      "discounts": []
+      "discounts": [
+        {{"type": "instant", "value": 100, "is_percentage": false, "description": "HDFC Bank ₹100 instant discount", "card_required": "hdfc-millennia", "max_cap": 100}}
+      ]
+    }},
+    {{
+      "platform": {{"name": "Zepto", "type": "quickcommerce", "url": null}},
+      "base_price": 2649,
+      "delivery_charge": 0,
+      "in_stock": true,
+      "discounts": [
+        {{"type": "cashback", "value": 3, "is_percentage": true, "description": "ICICI Bank 3% cashback", "card_required": "icici-amazon-pay"}}
+      ]
     }}
   ]
 }}
 
-Provide at least 3 deals with realistic prices for India."""
+Generate 4-5 DIFFERENT platforms with UNIQUE names. Each discount must match one of the user's cards."""
 
         return prompt
 
