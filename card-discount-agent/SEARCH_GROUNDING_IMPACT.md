@@ -7,8 +7,8 @@ Your current code uses **search grounding** which has **10-30x stricter rate lim
 ```python
 # Current code (backend/services/gemini_service.py:32)
 self.model = genai.GenerativeModel(
-    model_name='gemini-2.0-flash-thinking-exp',
-    tools='google_search_retrieval'  # ← THIS LINE causes strict limits
+    model_name='gemini-2.5-flash',
+    tools='google_search'  # ← THIS LINE causes strict limits
 )
 ```
 
@@ -124,7 +124,7 @@ Google applies stricter limits because:
 ```python
 # backend/services/gemini_service.py:31
 self.model = genai.GenerativeModel(
-    model_name='gemini-2.0-flash-thinking-exp'
+    model_name='gemini-2.5-flash'
     # No tools parameter = no search grounding
 )
 ```
@@ -158,13 +158,13 @@ class GeminiService:
     def __init__(self):
         # Model WITHOUT grounding (default)
         self.model_basic = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-thinking-exp'
+            model_name='gemini-2.5-flash'
         )
 
         # Model WITH grounding (for important queries)
         self.model_grounded = genai.GenerativeModel(
-            model_name='gemini-2.0-flash-thinking-exp',
-            tools='google_search_retrieval'
+            model_name='gemini-2.5-flash',
+            tools='google_search'
         )
 
     async def search_product_deals(self, query, cards, use_grounding=False):
@@ -235,15 +235,15 @@ nano /home/user/Projects_with_claude_code/card-discount-agent/backend/services/g
 **Change line 31-34 from**:
 ```python
 self.model = genai.GenerativeModel(
-    model_name='gemini-2.0-flash-thinking-exp',
-    tools='google_search_retrieval'
+    model_name='gemini-2.5-flash',
+    tools='google_search'
 )
 ```
 
 **To**:
 ```python
 self.model = genai.GenerativeModel(
-    model_name='gemini-2.0-flash-thinking-exp'
+    model_name='gemini-2.5-flash'
     # Search grounding disabled for testing
 )
 ```
@@ -404,15 +404,15 @@ class GeminiService:
         if enable_search_grounding:
             # WITH search grounding: 2-5 RPM, 50-100 RPD
             self.model = genai.GenerativeModel(
-                model_name='gemini-2.0-flash-thinking-exp',
-                tools='google_search_retrieval'
+                model_name='gemini-2.5-flash',
+                tools='google_search'
             )
             self.rate_limiter = RateLimiter(max_requests=2, time_window=60)
             logger.info("Search grounding ENABLED (strict limits: 2 RPM, ~50-100 RPD)")
         else:
             # WITHOUT search grounding: 15 RPM, 1500 RPD
             self.model = genai.GenerativeModel(
-                model_name='gemini-2.0-flash-thinking-exp'
+                model_name='gemini-2.5-flash'
             )
             self.rate_limiter = RateLimiter(max_requests=10, time_window=60)
             logger.info("Search grounding DISABLED (normal limits: 10 RPM, ~1500 RPD)")

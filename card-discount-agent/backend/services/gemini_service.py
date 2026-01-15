@@ -34,7 +34,7 @@ class GeminiService:
             # WITH search grounding: Real-time web data, stricter limits
             self.model = genai.GenerativeModel(
                 model_name='gemini-2.5-flash',
-                tools='google_search_retrieval'
+                tools='google_search'
             )
             # Rate limiter: 2 RPM (very conservative for grounded API)
             self.rate_limiter = RateLimiter(max_requests=2, time_window=60)
@@ -81,7 +81,7 @@ class GeminiService:
             # WITH search grounding
             self.model = genai.GenerativeModel(
                 model_name='gemini-2.5-flash',
-                tools='google_search_retrieval'
+                tools='google_search'
             )
             # Update rate limiter
             self.rate_limiter = RateLimiter(max_requests=2, time_window=60)
