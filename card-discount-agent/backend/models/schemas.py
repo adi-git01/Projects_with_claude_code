@@ -21,8 +21,8 @@ class CreditCard(BaseModel):
 class Platform(BaseModel):
     """Shopping platform model"""
     name: str
-    type: Literal['ecommerce', 'quickcommerce']
-    url: str
+    type: Optional[Literal['ecommerce', 'quickcommerce']] = 'ecommerce'  # Made optional for testing without search grounding
+    url: Optional[str] = None  # Made optional for testing without search grounding
 
 class Discount(BaseModel):
     """Discount/offer model"""
@@ -43,7 +43,7 @@ class ProductDeal(BaseModel):
 
     platform: Platform
     product_name: str = Field(..., alias='productName')
-    product_url: str = Field(..., alias='productUrl')
+    product_url: Optional[str] = Field(None, alias='productUrl')  # Made optional for testing without search grounding
     base_price: float = Field(..., alias='basePrice')
     delivery_charge: float = Field(0, alias='deliveryCharge')
     available_discounts: List[Discount] = Field([], alias='availableDiscounts')
