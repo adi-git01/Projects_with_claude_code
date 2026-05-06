@@ -1,14 +1,15 @@
 """
 RERA Karnataka Property Scraper — Selenium version
-Use this if the requests-based scraper (scrape_rera_properties.py) fails
-because the site renders results via JavaScript.
+Handles JavaScript-rendered pages.
 
 Requirements:
     pip install selenium webdriver-manager pandas
-    # Chrome or Firefox must be installed
 
 Run:
     python3 scrape_rera_selenium.py
+    python3 scrape_rera_selenium.py --show-browser      # visible window
+    python3 scrape_rera_selenium.py --diagnose           # save HTML dumps
+
 Output:
     rera_properties.csv
 """
@@ -16,6 +17,8 @@ Output:
 import time
 import re
 import sys
+import os
+import argparse
 import pandas as pd
 
 try:
@@ -25,116 +28,213 @@ try:
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.chrome.options import Options as ChromeOptions
     from selenium.webdriver.firefox.options import Options as FirefoxOptions
+    from selenium.common.exceptions import (
+        NoSuchElementException, TimeoutException, StaleElementReferenceException
+    )
 except ImportError:
-    print("[ERROR] selenium not installed. Run: pip install selenium webdriver-manager")
+    print("[ERROR] selenium not installed. Run: pip install selenium")
     sys.exit(1)
 
-SEARCH_URL = "https://rera.karnataka.gov.in/projectViewDetails"
+BASE_URL = "https://rera.karnataka.gov.in"
+HOME_URL = f"{BASE_URL}/home"
 
-TARGET_DISTRICTS = [
-    "Bengaluru Urban",
-    "Bangalore Urban",
-    "South Bengaluru",
-    "Bangalore South",
-    "BBMP South",
+DISTRICT_HINTS = [
+    "bengaluru urban", "bangalore urban",
+    "south bengaluru", "bangalore south",
+    "bengaluru south", "south bangalore",
 ]
+KRETA_HINTS = ["kreta", "buyer", "purchaser"]
 
-KRETA_HINTS = ["kreta", "buyer", "purchaser", "complainant"]
+# If JS renders the dropdowns lazily, how long to wait (seconds)
+PAGE_WAIT = 8
+POLL_INTERVAL = 0.5
 
+
+# ── driver setup ─────────────────────────────────────────────────────────────
 
 def make_driver(headless=True):
-    """Try Chrome first, then Firefox."""
-    # Chrome
-    try:
-        opts = ChromeOptions()
-        if headless:
-            opts.add_argument("--headless=new")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--window-size=1400,900")
-        opts.add_argument(
-            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
-        )
-        driver = webdriver.Chrome(options=opts)
-        print("[*] Using Chrome WebDriver")
-        return driver
-    except Exception as ce:
-        print(f"[!] Chrome failed ({ce}), trying Firefox ...")
-
-    # Firefox
-    try:
-        opts = FirefoxOptions()
-        if headless:
-            opts.add_argument("--headless")
-        driver = webdriver.Firefox(options=opts)
-        print("[*] Using Firefox WebDriver")
-        return driver
-    except Exception as fe:
-        print(f"[ERROR] Firefox also failed: {fe}")
-        print("Install Chrome or Firefox and the matching WebDriver.")
-        sys.exit(1)
+    for browser in ("chrome", "firefox"):
+        try:
+            if browser == "chrome":
+                opts = ChromeOptions()
+                if headless:
+                    opts.add_argument("--headless=new")
+                opts.add_argument("--no-sandbox")
+                opts.add_argument("--disable-dev-shm-usage")
+                opts.add_argument("--window-size=1400,900")
+                opts.add_argument("--disable-blink-features=AutomationControlled")
+                opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+                opts.add_argument(
+                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+                )
+                driver = webdriver.Chrome(options=opts)
+            else:
+                opts = FirefoxOptions()
+                if headless:
+                    opts.add_argument("--headless")
+                driver = webdriver.Firefox(options=opts)
+            print(f"[*] Using {browser.capitalize()} WebDriver")
+            return driver
+        except Exception as e:
+            print(f"[!] {browser.capitalize()} failed: {e}")
+    print("[ERROR] No browser available. Install Chrome or Firefox.")
+    sys.exit(1)
 
 
-def wait_for_table(driver, timeout=20):
-    """Wait until at least one <tr> appears inside any <table>."""
+# ── page interaction helpers ──────────────────────────────────────────────────
+
+def wait_for_selects(driver, min_count=1, timeout=PAGE_WAIT):
+    """Wait until at least min_count <select> elements are present."""
+    end = time.time() + timeout
+    while time.time() < end:
+        sels = driver.find_elements(By.TAG_NAME, "select")
+        if len(sels) >= min_count:
+            return sels
+        time.sleep(POLL_INTERVAL)
+    return driver.find_elements(By.TAG_NAME, "select")
+
+
+def get_options(driver, select_el):
     try:
-        WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table tr"))
-        )
-        return True
+        sel = Select(select_el)
+        return [(o.get_attribute("value") or "", o.text.strip()) for o in sel.options]
     except Exception:
-        return False
+        return []
 
 
-def get_select_options(driver, select_elem):
-    """Return list of (value, text) for a <select> element."""
-    sel = Select(select_elem)
-    return [(o.get_attribute("value"), o.text.strip()) for o in sel.options]
+def save_html(driver, filename):
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(driver.page_source)
+    print(f"    [diagnose] saved -> {filename}")
 
 
-def find_target_select(driver, hints):
-    """Find a <select> whose options include any of the hint strings."""
+def find_project_search_link(driver):
+    """
+    The search form may not be at the root URL. Try to find a nav link
+    that leads to the project search/view page.
+    """
+    keywords = ["project", "view project", "search project", "registered project"]
+    links = driver.find_elements(By.TAG_NAME, "a")
+    for link in links:
+        text = link.text.strip().lower()
+        href = (link.get_attribute("href") or "").lower()
+        for kw in keywords:
+            if kw in text or kw.replace(" ", "") in href:
+                return link
+    return None
+
+
+def navigate_to_search_form(driver, diagnose=False):
+    """
+    Load the home page, navigate to the project search section,
+    and wait for the search form with dropdowns to appear.
+    Returns the URL of the search form page, or None on failure.
+    """
+    print(f"[*] Loading {HOME_URL} ...")
+    driver.get(HOME_URL)
+    time.sleep(3)
+
+    if diagnose:
+        save_html(driver, "diagnose_home.html")
+
+    # Check if the home page itself has the search form
+    selects = wait_for_selects(driver, min_count=1, timeout=5)
+    if selects:
+        print(f"[*] Search form found on home page ({len(selects)} selects).")
+        return driver.current_url
+
+    # Try clicking a "Project" nav link
+    print("[*] No form on home page; looking for project search link ...")
+    link = find_project_search_link(driver)
+    if link:
+        href = link.get_attribute("href") or ""
+        print(f"    Clicking: '{link.text.strip()}' -> {href}")
+        try:
+            driver.execute_script("arguments[0].click();", link)
+            time.sleep(3)
+            if diagnose:
+                save_html(driver, "diagnose_after_click.html")
+            selects = wait_for_selects(driver, min_count=1, timeout=PAGE_WAIT)
+            if selects:
+                print(f"[*] Form found after navigation ({len(selects)} selects).")
+                return driver.current_url
+        except Exception as e:
+            print(f"    Click failed: {e}")
+
+    # Try known direct URLs
+    candidates = [
+        f"{BASE_URL}/viewAllProjects?language=en",
+        f"{BASE_URL}/viewProjects",
+        f"{BASE_URL}/searchProject",
+        f"{BASE_URL}/projectViewDetails",
+    ]
+    for url in candidates:
+        print(f"[*] Trying {url} ...")
+        try:
+            driver.get(url)
+            time.sleep(3)
+            if diagnose:
+                slug = url.replace("https://", "").replace("/", "_").replace("?", "_").replace("=", "_")
+                save_html(driver, f"diagnose_{slug}.html")
+            selects = wait_for_selects(driver, min_count=1, timeout=PAGE_WAIT)
+            if selects:
+                print(f"[*] Form found at {url} ({len(selects)} selects).")
+                return driver.current_url
+        except Exception as e:
+            print(f"    Error: {e}")
+
+    return None
+
+
+# ── dropdown detection ────────────────────────────────────────────────────────
+
+def find_select_by_options(driver, hints):
+    """Find a <select> whose options contain any hint string."""
     selects = driver.find_elements(By.TAG_NAME, "select")
     for sel_el in selects:
-        options = get_select_options(driver, sel_el)
-        for val, text in options:
-            for hint in hints:
-                if hint.lower() in text.lower() and val:
-                    return sel_el, options
+        opts = get_options(driver, sel_el)
+        for val, text in opts:
+            if any(h in text.lower() for h in hints) and val:
+                return sel_el, opts
     return None, []
 
 
-def select_option_by_hint(driver, select_el, options, hints):
-    """Select first option whose text contains any hint."""
+def select_by_hint(select_el, options, hints):
+    """Select first matching option; return (value, text) or (None, None)."""
     sel = Select(select_el)
     for val, text in options:
-        for hint in hints:
-            if hint.lower() in text.lower() and val:
+        for h in hints:
+            if h in text.lower() and val:
                 sel.select_by_value(val)
-                print(f"    Selected: {text!r} (value={val!r})")
                 return val, text
     return None, None
 
 
-def extract_table_data(driver):
-    """Extract all rows from the (first/largest) table on the page."""
+def dump_all_selects(driver):
+    print("\n  All visible <select> options:")
+    selects = driver.find_elements(By.TAG_NAME, "select")
+    for i, sel_el in enumerate(selects):
+        name = sel_el.get_attribute("name") or sel_el.get_attribute("id") or str(i)
+        opts = get_options(driver, sel_el)
+        print(f"    [{name}]")
+        for v, t in opts:
+            print(f"      {v!r:30s}  {t!r}")
+
+
+# ── results extraction ────────────────────────────────────────────────────────
+
+def extract_table(driver):
     tables = driver.find_elements(By.TAG_NAME, "table")
     if not tables:
         return []
-
-    # Pick the table with the most rows
     best = max(tables, key=lambda t: len(t.find_elements(By.TAG_NAME, "tr")))
     rows = best.find_elements(By.TAG_NAME, "tr")
-    if not rows:
+    if len(rows) < 2:
         return []
-
-    # Headers
-    header_cells = rows[0].find_elements(By.TAG_NAME, "th")
-    if not header_cells:
-        header_cells = rows[0].find_elements(By.TAG_NAME, "td")
-    headers = [c.text.strip() for c in header_cells]
-
+    headers = [c.text.strip() for c in rows[0].find_elements(By.TAG_NAME, "th")]
+    if not headers:
+        headers = [c.text.strip() for c in rows[0].find_elements(By.TAG_NAME, "td")]
     records = []
     for row in rows[1:]:
         cells = row.find_elements(By.TAG_NAME, "td")
@@ -144,7 +244,6 @@ def extract_table_data(driver):
         for i, cell in enumerate(cells):
             key = headers[i] if i < len(headers) else f"col_{i}"
             rec[key] = cell.text.strip()
-            # Capture hyperlinks
             links = cell.find_elements(By.TAG_NAME, "a")
             if links:
                 rec[f"{key}_url"] = links[0].get_attribute("href") or ""
@@ -153,44 +252,27 @@ def extract_table_data(driver):
 
 
 def get_total_pages(driver):
-    """Detect number of pages from pagination or record count text."""
     src = driver.page_source
-    # DataTables: recordsTotal
-    m = re.search(r'"recordsTotal"\s*:\s*(\d+)', src)
-    if m:
-        total = int(m.group(1))
-        return max(1, -(-total // 10))
-
-    # "Showing X to Y of Z entries"
-    m = re.search(r"of\s+([\d,]+)\s+(?:entries|records)", src, re.IGNORECASE)
-    if m:
-        total = int(m.group(1).replace(",", ""))
-        return max(1, -(-total // 10))
-
-    # Pagination links
-    try:
-        page_links = driver.find_elements(By.CSS_SELECTOR, ".pagination a, nav a")
-        nums = []
-        for a in page_links:
-            t = a.text.strip()
-            if t.isdigit():
-                nums.append(int(t))
-        if nums:
-            return max(nums)
-    except Exception:
-        pass
-
-    return 1
+    for pat in [
+        r"of\s+([\d,]+)\s+(?:entries|records)",
+        r'"recordsTotal"\s*:\s*(\d+)',
+        r"Total\s*:?\s*([\d,]+)\s+(?:record|project)",
+    ]:
+        m = re.search(pat, src, re.IGNORECASE)
+        if m:
+            total = int(m.group(1).replace(",", ""))
+            return max(1, -(-total // 10))
+    nums = []
+    for a in driver.find_elements(By.CSS_SELECTOR, ".pagination a, nav a"):
+        t = a.text.strip()
+        if t.isdigit():
+            nums.append(int(t))
+    return max(nums) if nums else 1
 
 
-def click_next_page(driver, current_page):
-    """
-    Click the next page button. Returns True if successful.
-    Tries common pagination patterns.
-    """
+def click_next(driver, current_page):
     next_page = current_page + 1
-
-    # Try link with exact page number text
+    # Try page-number link
     try:
         links = driver.find_elements(By.LINK_TEXT, str(next_page))
         if links:
@@ -198,43 +280,103 @@ def click_next_page(driver, current_page):
             return True
     except Exception:
         pass
-
-    # Try "Next" button
-    for selector in ["a.next", "a[aria-label='Next']", "#next", ".next a", "a:contains('Next')"]:
+    # Try "Next" button variants
+    for xpath in [
+        "//a[normalize-space()='Next']",
+        "//a[normalize-space()='>']",
+        "//a[normalize-space()='»']",
+        "//li[contains(@class,'next')]/a",
+    ]:
         try:
-            btn = driver.find_element(By.CSS_SELECTOR, selector)
+            btn = driver.find_element(By.XPATH, xpath)
             if btn.is_enabled():
                 driver.execute_script("arguments[0].click();", btn)
                 return True
         except Exception:
             pass
-
-    # Try button with text "Next" or ">"
-    try:
-        btns = driver.find_elements(By.XPATH, "//a[normalize-space()='Next' or normalize-space()='>']")
-        if btns:
-            driver.execute_script("arguments[0].click();", btns[0])
-            return True
-    except Exception:
-        pass
-
     return False
 
 
-def scrape_district(driver, district_name):
-    """Scrape all pages for the currently-selected district."""
+def find_submit_button(driver):
+    for sel in [
+        "input[type='submit']", "button[type='submit']",
+        "#searchBtn", "#submitBtn", "button.btn-primary",
+        "button.btn-search", ".search-btn",
+    ]:
+        try:
+            return driver.find_element(By.CSS_SELECTOR, sel)
+        except Exception:
+            pass
+    try:
+        btns = driver.find_elements(
+            By.XPATH,
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'search')"
+            " or contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'submit')]"
+        )
+        if btns:
+            return btns[0]
+    except Exception:
+        pass
+    return None
+
+
+# ── per-district scrape ───────────────────────────────────────────────────────
+
+def scrape_district(driver, form_url, district_val, district_name,
+                    kreta_hints, diagnose=False):
     all_records = []
     page = 1
 
     while True:
-        print(f"  [*] {district_name}  |  Page {page} ...")
-        time.sleep(2)
+        # Re-load the form page for each page to stay clean
+        if page == 1:
+            driver.get(form_url)
+            time.sleep(3)
+            selects = wait_for_selects(driver, min_count=1, timeout=PAGE_WAIT)
+            if not selects:
+                print(f"  [!] Form disappeared for {district_name}. Stopping.")
+                break
 
-        if not wait_for_table(driver, timeout=15):
+            # Set district
+            d_sel, d_opts = find_select_by_options(driver, DISTRICT_HINTS)
+            if not d_sel:
+                print(f"  [!] Lost district dropdown.")
+                break
+            sel = Select(d_sel)
+            sel.select_by_value(district_val)
+            print(f"  [*] District set: {district_name}")
+            time.sleep(1)
+
+            # Set kreta if available
+            k_sel, k_opts = find_select_by_options(driver, kreta_hints)
+            if k_sel:
+                kv, kt = select_by_hint(k_sel, k_opts, kreta_hints)
+                if kv:
+                    print(f"  [*] Kreta filter set: {kt!r}")
+
+            # Submit
+            btn = find_submit_button(driver)
+            if btn:
+                driver.execute_script("arguments[0].click();", btn)
+                print(f"  [*] Search submitted.")
+                time.sleep(4)
+            else:
+                print(f"  [!] No submit button found; trying with current page content.")
+
+        print(f"  [*] {district_name}  |  Page {page} ...")
+        if diagnose:
+            save_html(driver, f"diagnose_{district_name.replace(' ', '_')}_p{page}.html")
+
+        # Wait for table
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "table tr"))
+            )
+        except TimeoutException:
             print(f"  [!] Table not found on page {page}.")
             break
 
-        records = extract_table_data(driver)
+        records = extract_table(driver)
         if not records:
             print(f"  [!] No rows parsed on page {page}.")
             break
@@ -242,158 +384,71 @@ def scrape_district(driver, district_name):
         for rec in records:
             rec["_district"] = district_name
             rec["_page"] = page
-
         all_records.extend(records)
         print(f"      -> {len(records)} rows  (total: {len(all_records)})")
 
         total_pages = get_total_pages(driver)
         if page >= total_pages:
             break
-
-        if not click_next_page(driver, page):
-            print(f"  [!] Cannot navigate to page {page + 1}. Stopping.")
+        if not click_next(driver, page):
+            print(f"  [!] Cannot go to page {page + 1}. Stopping.")
             break
-
         page += 1
+        time.sleep(2)
 
     return all_records
 
 
-def find_submit_button(driver):
-    """Return the search/submit button element."""
-    for sel in [
-        "input[type='submit']",
-        "button[type='submit']",
-        "button.search-btn",
-        "button.btn-primary",
-        "#searchBtn",
-        "#submitBtn",
-    ]:
-        try:
-            btn = driver.find_element(By.CSS_SELECTOR, sel)
-            return btn
-        except Exception:
-            pass
+# ── main ─────────────────────────────────────────────────────────────────────
 
-    # Fallback: any button with text search/submit/go
-    try:
-        btns = driver.find_elements(
-            By.XPATH,
-            "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'search')"
-            " or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'submit')"
-            " or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'go')]"
-        )
-        if btns:
-            return btns[0]
-    except Exception:
-        pass
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--show-browser", action="store_true",
+                    help="Run with visible browser window")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="Save HTML dumps of every page for debugging")
+    args = ap.parse_args()
 
-    return None
-
-
-def main(headless=True):
-    driver = make_driver(headless=headless)
+    driver = make_driver(headless=not args.show_browser)
     all_records = []
 
     try:
-        print(f"[*] Opening {SEARCH_URL}")
-        driver.get(SEARCH_URL)
-        time.sleep(3)
-
-        print("[*] Discovering form selects ...")
-        selects = driver.find_elements(By.TAG_NAME, "select")
-        print(f"    Found {len(selects)} <select> element(s)")
-
-        for i, sel_el in enumerate(selects):
-            opts = get_select_options(driver, sel_el)
-            name = sel_el.get_attribute("name") or sel_el.get_attribute("id") or f"select_{i}"
-            print(f"    [{name}]  {len(opts)} options: {[t for _, t in opts[:5]]} ...")
-
-        # Find district select
-        district_select, district_options = find_target_select(driver, TARGET_DISTRICTS)
-        if not district_select:
-            print("[!] Could not find district dropdown. Dumping all options:")
-            for i, sel_el in enumerate(selects):
-                opts = get_select_options(driver, sel_el)
-                name = sel_el.get_attribute("name") or str(i)
-                for v, t in opts:
-                    print(f"    [{name}] {v!r} -> {t!r}")
+        # Step 1: Navigate to the form
+        form_url = navigate_to_search_form(driver, diagnose=args.diagnose)
+        if not form_url:
+            print("\n[ERROR] Could not find the project search form on any page.")
+            print("  Run with --show-browser and --diagnose to inspect what loads.")
             sys.exit(1)
 
-        # Find kreta select
-        kreta_select = None
-        kreta_options = []
-        for sel_el in selects:
-            if sel_el == district_select:
-                continue
-            opts = get_select_options(driver, sel_el)
-            for _, text in opts:
-                if any(h in text.lower() for h in KRETA_HINTS):
-                    kreta_select = sel_el
-                    kreta_options = opts
-                    break
+        # Step 2: Discover district dropdown
+        selects = wait_for_selects(driver, min_count=1, timeout=PAGE_WAIT)
+        print(f"\n[*] {len(selects)} select(s) found on the search form page.")
 
-        if kreta_select:
-            print(f"[*] Kreta filter dropdown found.")
-        else:
-            print("[!] No kreta filter found; scraping without it.")
+        d_sel, d_opts = find_select_by_options(driver, DISTRICT_HINTS)
+        if not d_sel:
+            print("[!] Could not find district dropdown.")
+            dump_all_selects(driver)
+            if args.diagnose:
+                save_html(driver, "diagnose_no_district.html")
+            sys.exit(1)
 
-        # Collect distinct district targets (value + display text)
-        seen_vals = set()
-        targets = []
-        for val, text in district_options:
-            for hint in TARGET_DISTRICTS:
-                if hint.lower() in text.lower() and val and val not in seen_vals:
-                    seen_vals.add(val)
+        # Collect unique target districts
+        seen, targets = set(), []
+        for val, text in d_opts:
+            for h in DISTRICT_HINTS:
+                if h in text.lower() and val and val not in seen:
+                    seen.add(val)
                     targets.append((val, text))
 
-        print(f"[*] Will scrape {len(targets)} district(s): {[t for _, t in targets]}")
+        print(f"[*] Target districts: {[t[1] for t in targets]}")
 
+        # Step 3: Scrape each district
         for dist_val, dist_name in targets:
             print(f"\n[>] Scraping: {dist_name}")
-            driver.get(SEARCH_URL)
-            time.sleep(2)
-
-            # Re-find elements after navigation
-            selects = driver.find_elements(By.TAG_NAME, "select")
-            d_sel, d_opts = find_target_select(driver, TARGET_DISTRICTS)
-            if not d_sel:
-                print(f"  [!] Lost district dropdown. Skipping {dist_name}.")
-                continue
-
-            # Select district
-            sel_obj = Select(d_sel)
-            try:
-                sel_obj.select_by_value(dist_val)
-                print(f"  [*] District set to: {dist_name}")
-                time.sleep(1)
-            except Exception as e:
-                print(f"  [!] Could not select district value {dist_val!r}: {e}")
-                continue
-
-            # Select kreta if available
-            if kreta_select:
-                # Re-find the kreta select after navigation
-                for sel_el in driver.find_elements(By.TAG_NAME, "select"):
-                    opts = get_select_options(driver, sel_el)
-                    for v, t in opts:
-                        if any(h in t.lower() for h in KRETA_HINTS):
-                            ksel = Select(sel_el)
-                            ksel.select_by_value(v)
-                            print(f"  [*] Kreta filter set: {t!r}")
-                            time.sleep(0.5)
-                            break
-
-            # Click search
-            submit_btn = find_submit_button(driver)
-            if submit_btn:
-                driver.execute_script("arguments[0].click();", submit_btn)
-                print(f"  [*] Search submitted.")
-                time.sleep(3)
-            else:
-                print(f"  [!] Submit button not found; results may already be loaded.")
-
-            records = scrape_district(driver, dist_name)
+            records = scrape_district(
+                driver, form_url, dist_val, dist_name,
+                KRETA_HINTS, diagnose=args.diagnose
+            )
             all_records.extend(records)
 
     finally:
@@ -401,19 +456,15 @@ def main(headless=True):
 
     if not all_records:
         print("\n[!] No records collected.")
+        print("  Try: python3 scrape_rera_selenium.py --show-browser --diagnose")
         sys.exit(1)
 
     df = pd.DataFrame(all_records)
     out_path = "rera_properties.csv"
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
-    print(f"\n[+] Done! {len(df)} total records saved to {out_path}")
+    print(f"\n[+] {len(df)} records saved to {out_path}")
     print(df.head(3).to_string())
 
 
 if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--show-browser", action="store_true",
-                    help="Run with visible browser window (not headless)")
-    args = ap.parse_args()
-    main(headless=not args.show_browser)
+    main()
