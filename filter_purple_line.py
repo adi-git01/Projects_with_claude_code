@@ -3,8 +3,12 @@ Filter RERA properties within 4km of Namma Metro Purple Line stations.
 Uses hardcoded locality → coordinate mapping for Bangalore South areas
 (no external API needed).
 
+Input:  rera_raw.tsv  (136 properties, 10-column format)
+        rera_raw2.tsv (192 properties, 6-column format)
+
 Outputs:
   rera_near_purple_line.csv
+  rera_all_with_distances.csv
   rera_purple_line_map.html   (open in any browser)
 """
 
@@ -29,7 +33,6 @@ PURPLE_LINE_STATIONS = [
 THRESHOLD_KM = 4.0
 
 # ── Known locality → (lat, lon) for Bangalore South ─────────────────────────
-# Covers every distinct area that appears in the dataset
 LOCALITY_COORDS = {
     # JP Nagar / Jayanagar – near Yelachenahalli
     "jayanagar":                  (12.9279, 77.5848),
@@ -106,7 +109,7 @@ LOCALITY_COORDS = {
     "basapura":                   (12.8780, 77.6150),
     "konappana agrahara":         (12.8780, 77.6150),
     "kammanahalli":               (12.8850, 77.6130),
-    "yelenahalli":                (12.8870, 77.6210),   # Begur Hobli yelenahalli ≠ yelachenahalli station
+    "yelenahalli":                (12.8870, 77.6210),   # Begur Hobli yelenahalli ≠ yelachenahalli metro
     "bilekahalli":                (12.8890, 77.6050),
     "parappana agrahara":         (12.8720, 77.6270),
     "bommanahalli":               (12.8960, 77.6220),
@@ -141,7 +144,23 @@ LOCALITY_COORDS = {
     "sudamanagara":               (12.9200, 77.5750),
     "indiranagar":                (12.9719, 77.6412),
     "whitefield":                 (12.9698, 77.7499),
+
+    # ─── new entries for rera_raw2 ────────────────────────────────────────────
+    "pantharapalya":              (12.9450, 77.5060),   # Kengeri Hobli, Mysore Main Rd
+    "taralu":                     (12.8510, 77.5170),   # Uttarahalli Hobli (≈ tharalu)
+    "doddabelle":                 (12.8500, 77.4720),   # Kengeri Hobli (≈ doddabele)
+    "ramohalli":                  (12.8190, 77.4620),   # Kengeri 2 Hobli
+    "b m kaval":                  (12.8470, 77.4830),   # Kengeri Hobli
+    "halagevadarahalli":          (12.8680, 77.5180),   # Kengeri Hobli
+    "haligevaderahalli":          (12.8680, 77.5180),   # Kengeri Hobli (spelling variant)
+    "doddakalasandra":            (12.8774, 77.5483),   # Uttarahalli Hobli (≈ Doddakallasandra)
+    "doddakallasandra":           (12.8774, 77.5483),   # Uttarahalli Hobli
+    "girinagar":                  (12.9200, 77.5450),   # near Banashankari/Attiguppe
+    "anjanapura":                 (12.8870, 77.5490),   # Uttarahalli Hobli
+    "alahalli":                   (12.8950, 77.5530),   # Uttarahalli Hobli, Ward 196
+    "bhcs layout":                (12.9000, 77.5480),   # Uttarahalli Hobli (BSK 6th stage)
 }
+
 
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -149,9 +168,11 @@ def haversine(lat1, lon1, lat2, lon2):
     a = math.sin(d(lat2-lat1)/2)**2 + math.cos(d(lat1))*math.cos(d(lat2))*math.sin(d(lon2-lon1)/2)**2
     return R * 2 * math.asin(math.sqrt(a))
 
+
 def nearest_station(lat, lon):
     best = min(PURPLE_LINE_STATIONS, key=lambda s: haversine(lat, lon, s[1], s[2]))
     return best[0], round(haversine(lat, lon, best[1], best[2]), 2)
+
 
 def resolve_coords(address):
     """
@@ -169,7 +190,9 @@ def resolve_coords(address):
         return best_coords[0], best_coords[1], best_match
     return None, None, None
 
+
 def parse_tsv(path):
+    """10-column format: sl_no | project | promoter | date | ext1 | ext2 | ext3 | address | area | units"""
     rows = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -193,13 +216,60 @@ def parse_tsv(path):
             })
     return rows
 
+
+def parse_tsv2(path):
+    """6-column format: row_num | project | promoter | date | address | area"""
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+            p = line.split("\t")
+            while len(p) < 6:
+                p.append("")
+            rows.append({
+                "Sl No":           p[0].strip(),
+                "Project Name":    p[1].strip(),
+                "Promoter":        p[2].strip(),
+                "Completion Date": p[3].strip(),
+                "Extension 1":     "",
+                "Extension 2":     "",
+                "Extension 3":     "",
+                "Address":         p[4].strip(),
+                "Area (sqm)":      p[5].strip(),
+                "Units":           "",
+            })
+    return rows
+
+
 def main():
-    rows = parse_tsv("rera_raw.tsv")
-    print(f"[*] {len(rows)} properties loaded.\n")
+    rows1 = parse_tsv("rera_raw.tsv")
+    rows2 = parse_tsv2("rera_raw2.tsv")
+    print(f"[*] Dataset 1: {len(rows1)} properties  |  Dataset 2: {len(rows2)} properties")
+
+    # Merge with deduplication by project name (case-insensitive; dataset 1 wins)
+    seen_names = {}
+    all_rows = []
+    for r in rows1:
+        key = r["Project Name"].strip().lower()
+        if key not in seen_names:
+            seen_names[key] = True
+            r["_source"] = "1"
+            all_rows.append(r)
+    new_count = 0
+    for r in rows2:
+        key = r["Project Name"].strip().lower()
+        if key not in seen_names:
+            seen_names[key] = True
+            r["_source"] = "2"
+            all_rows.append(r)
+            new_count += 1
+    print(f"[*] {new_count} new properties from Dataset 2 → {len(all_rows)} unique total.\n")
 
     all_results, no_match = [], []
 
-    for row in rows:
+    for row in all_rows:
         addr = row["Address"]
         lat, lon, matched = resolve_coords(addr)
         if lat is None:
@@ -216,21 +286,25 @@ def main():
             "Google Maps": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
         })
         status = "✓" if within else "✗"
-        print(f"  {status} {row['Project Name'][:42]:42s} | {matched:22s} | {station} ({dist_km:.1f} km)")
+        src = f"[DS{row['_source']}]"
+        print(f"  {status} {src} {row['Project Name'][:40]:40s} | {matched:22s} | {station} ({dist_km:.1f} km)")
         all_results.append(row)
 
     qualified = [r for r in all_results if r["Within 4km"] == "Yes"]
 
-    # ── CSV output ────────────────────────────────────────────────────────
-    cols = ["Sl No","Project Name","Promoter","Completion Date","Extension 1",
-            "Extension 2","Extension 3","Address","Area (sqm)","Units",
-            "Matched Locality","Nearest Metro Station","Distance to Metro (km)",
-            "Within 4km","Google Maps"]
+    # ── CSV output ────────────────────────────────────────────────────────────
+    cols = ["Sl No", "Project Name", "Promoter", "Completion Date",
+            "Extension 1", "Extension 2", "Extension 3",
+            "Address", "Area (sqm)", "Units",
+            "Matched Locality", "Nearest Metro Station",
+            "Distance to Metro (km)", "Within 4km", "Google Maps"]
 
-    df_all = pd.DataFrame(all_results, columns=[c for c in cols if c in all_results[0]])
+    df_all = pd.DataFrame(all_results)
+    df_all = df_all[[c for c in cols if c in df_all.columns]]
     df_all.to_csv("rera_all_with_distances.csv", index=False, encoding="utf-8-sig")
 
-    df_near = pd.DataFrame(qualified, columns=[c for c in cols if c in qualified[0]])
+    df_near = pd.DataFrame(qualified)
+    df_near = df_near[[c for c in cols if c in df_near.columns]]
     df_near = df_near.sort_values("Distance to Metro (km)")
     df_near.to_csv("rera_near_purple_line.csv", index=False, encoding="utf-8-sig")
 
@@ -240,18 +314,20 @@ def main():
     if no_match:
         print(f"\n[!] {len(no_match)} addresses had no locality match:")
         for r in no_match:
-            print(f"    {r['Sl No']:4s} {r['Project Name'][:45]} | {r['Address'][:70]}")
+            print(f"    [{r['_source']}] {r['Sl No']:4s} {r['Project Name'][:42]} | {r['Address'][:65]}")
 
-    # ── HTML map ──────────────────────────────────────────────────────────
-    pins = qualified   # only show qualifying properties
+    # ── HTML map ──────────────────────────────────────────────────────────────
+    pins = qualified
     markers_js = ""
     for p in pins:
-        popup = (f"<b>{p['Project Name']}</b><br>"
-                 f"<i>{p['Promoter']}</i><br>"
+        name_esc  = p['Project Name'].replace("'", "\\'").replace('"', '&quot;')
+        promo_esc = p['Promoter'].replace("'", "\\'").replace('"', '&quot;')
+        addr_esc  = p['Address'][:120].replace("'", "\\'").replace('"', '&quot;').replace("\n", " ")
+        popup = (f"<b>{name_esc}</b><br>"
+                 f"<i>{promo_esc}</i><br>"
                  f"Completion: {p['Completion Date']}<br>"
                  f"Nearest Metro: <b>{p['Nearest Metro Station']}</b> ({p['Distance to Metro (km)']} km)<br>"
-                 f"<small>{p['Address'][:120]}</small>")
-        popup = popup.replace("'", "\\'").replace("\n", " ").replace('"', '&quot;')
+                 f"<small>{addr_esc}</small>")
         lat, lon = p["Lat"], p["Lon"]
         markers_js += (
             f"  L.marker([{lat},{lon}],{{icon:propIcon}})"
@@ -262,7 +338,7 @@ def main():
         markers_js += (
             f"  L.circleMarker([{slat},{slon}],{{radius:9,color:'#7b2fbe',"
             f"fillColor:'#7b2fbe',fillOpacity:0.9,weight:2}})"
-            f".addTo(map).bindPopup('<b>🚇 {name}</b>');\n"
+            f".addTo(map).bindPopup('<b>\U0001f687 {name}</b>');\n"
         )
         markers_js += (
             f"  L.circle([{slat},{slon}],{{radius:4000,color:'#7b2fbe',"
@@ -298,7 +374,7 @@ def main():
 <script>
 var map = L.map('map').setView([{avg_lat:.4f},{avg_lon:.4f}],12);
 L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{
-  attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 }}).addTo(map);
 var propIcon = L.icon({{
   iconUrl:'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
@@ -313,10 +389,10 @@ var propIcon = L.icon({{
         f.write(html)
     print("    rera_purple_line_map.html saved  (open in any browser)")
 
-    # Google Maps URL (up to 10 waypoints)
     if pins:
         wps = "/".join(f"{p['Lat']},{p['Lon']}" for p in pins[:10])
         print(f"\n    Google Maps (first 10 pins):")
         print(f"    https://www.google.com/maps/dir/{wps}")
+
 
 main()
